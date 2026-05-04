@@ -1,224 +1,330 @@
 #include <efi.h>
 #include <efilib.h>
 
-#define INPUT_MAX    256
-#define MAX_HISTORY  50
-#define MAX_ENV      32
-#define ENV_NAME_MAX 32
-#define ENV_VAL_MAX  128
+#define MAX_INPUT   256
+#define MAX_HISTORY 50
+#define MAX_ENVVARS 32
 
-static CHAR16 history[MAX_HISTORY][INPUT_MAX];
-static UINTN  history_count = 0;
-static UINTN  history_index = 0;
+CHAR16 g_history[MAX_HISTORY][MAX_INPUT];
+int    g_hist_count = 0;
+int    g_hist_pos   = 0;
 
-static VOID history_add(const CHAR16 *cmd) {
-    if (history_count < MAX_HISTORY) {
-        StrCpy(history[history_count++], cmd);
-    } else {
-        for (UINTN i = 0; i < MAX_HISTORY - 1; i++)
-            StrCpy(history[i], history[i + 1]);
-        StrCpy(history[MAX_HISTORY - 1], cmd);
+CHAR16 g_env_names [MAX_ENVVARS][64];
+CHAR16 g_env_values[MAX_ENVVARS][128];
+int    g_env_count = 0;
+
+
+void history_add(CHAR16 *cmd)
+{
+    if (g_hist_count < MAX_HISTORY)
+    {
+        StrCpy(g_history[g_hist_count], cmd);
+        g_hist_count++;
     }
-    history_index = history_count;
+    else
+    {
+        for (int i = 0; i < MAX_HISTORY - 1; i++)
+        {
+            StrCpy(g_history[i], g_history[i + 1]);
+        }
+        StrCpy(g_history[MAX_HISTORY - 1], cmd);
+    }
+    g_hist_pos = g_hist_count;
 }
 
-static CHAR16 env_names [MAX_ENV][ENV_NAME_MAX];
-static CHAR16 env_values[MAX_ENV][ENV_VAL_MAX];
-static UINTN  env_count = 0;
 
-static const CHAR16 *env_get(const CHAR16 *name) {
-    for (UINTN i = 0; i < env_count; i++)
-        if (StrCmp(env_names[i], name) == 0)
-            return env_values[i];
+CHAR16 *env_get(CHAR16 *name)
+{
+    for (int i = 0; i < g_env_count; i++)
+    {
+        if (StrCmp(g_env_names[i], name) == 0)
+        {
+            return g_env_values[i];
+        }
+    }
     return NULL;
 }
 
-static VOID env_set(const CHAR16 *name, const CHAR16 *value) {
-    for (UINTN i = 0; i < env_count; i++) {
-        if (StrCmp(env_names[i], name) == 0) {
-            StrCpy(env_values[i], value);
+void env_set(CHAR16 *name, CHAR16 *value)
+{
+    for (int i = 0; i < g_env_count; i++)
+    {
+        if (StrCmp(g_env_names[i], name) == 0)
+        {
+            StrCpy(g_env_values[i], value);
             return;
         }
     }
-    if (env_count < MAX_ENV) {
-        StrCpy(env_names [env_count], name);
-        StrCpy(env_values[env_count], value);
-        env_count++;
-    } else {
-        Print(L"set: environment full\r\n");
+    if (g_env_count < MAX_ENVVARS)
+    {
+        StrCpy(g_env_names[g_env_count], name);
+        StrCpy(g_env_values[g_env_count], value);
+        g_env_count++;
+    }
+    else
+    {
+        Print(L"env: table full\r\n");
     }
 }
 
-static BOOLEAN env_unset(const CHAR16 *name) {
-    for (UINTN i = 0; i < env_count; i++) {
-        if (StrCmp(env_names[i], name) == 0) {
-            env_count--;
-            StrCpy(env_names [i], env_names [env_count]);
-            StrCpy(env_values[i], env_values[env_count]);
-            return TRUE;
+void env_unset(CHAR16 *name)
+{
+    for (int i = 0; i < g_env_count; i++)
+    {
+        if (StrCmp(g_env_names[i], name) == 0)
+        {
+            g_env_count--;
+            StrCpy(g_env_names[i],  g_env_names[g_env_count]);
+            StrCpy(g_env_values[i], g_env_values[g_env_count]);
+            return;
         }
     }
-    return FALSE;
+    Print(L"unset: '%s' not found\r\n", name);
 }
 
-static VOID env_expand(const CHAR16 *src, CHAR16 *dst) {
-    UINTN d = 0;
-    for (UINTN s = 0; src[s] && d < INPUT_MAX - 1; ) {
-        if (src[s] != L'$') { dst[d++] = src[s++]; continue; }
-        s++; /* skip '$' */
-        CHAR16 vname[ENV_NAME_MAX]; UINTN vn = 0;
-        while (src[s] && vn < ENV_NAME_MAX - 1) {
+void env_expand(CHAR16 *src, CHAR16 *dst)
+{
+    int d = 0;
+    for (int s = 0; src[s] != L'\0' && d < MAX_INPUT - 1; s++)
+    {
+        if (src[s] != L'$')
+        {
+            dst[d++] = src[s];
+            continue;
+        }
+        s++;
+        CHAR16 varname[64];
+        int n = 0;
+        while (src[s] != L'\0' && n < 63)
+        {
             CHAR16 c = src[s];
-            if (!((c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z') ||
-                  (c >= L'0' && c <= L'9') || c == L'_')) break;
-            vname[vn++] = c; s++;
+            int is_letter = (c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z');
+            int is_digit  = (c >= L'0' && c <= L'9');
+            if (!is_letter && !is_digit && c != L'_')
+            {
+                break;
+            }
+            varname[n++] = c;
+            s++;
         }
-        vname[vn] = L'\0';
-        const CHAR16 *val = (vn > 0) ? env_get(vname) : NULL;
-        if (val)
-            for (UINTN vi = 0; val[vi] && d < INPUT_MAX - 1; vi++)
-                dst[d++] = val[vi];
+        varname[n] = L'\0';
+        s--;
+        CHAR16 *val = env_get(varname);
+        if (val != NULL)
+        {
+            for (int v = 0; val[v] != L'\0' && d < MAX_INPUT - 1; v++)
+            {
+                dst[d++] = val[v];
+            }
+        }
     }
     dst[d] = L'\0';
 }
 
-static VOID line_zero(CHAR16 *line) {
-    for (UINTN i = 0; i < INPUT_MAX; i++) line[i] = L'\0';
-}
-static VOID line_clear(UINTN pos) { while (pos--) Print(L"\b \b"); }
-static VOID line_load(CHAR16 *line, UINTN *pos, const CHAR16 *src) {
-    line_clear(*pos);
-    StrCpy(line, src);
-    *pos = StrLen(line);
-    if (*pos >= INPUT_MAX) *pos = INPUT_MAX - 1;
-    Print(L"%s", line);
+void cmd_set(CHAR16 *arg)
+{
+    if (arg == NULL || *arg == L'\0')
+    {
+        if (g_env_count == 0)
+        {
+            Print(L"(no variables set)\r\n");
+        }
+        for (int i = 0; i < g_env_count; i++)
+        {
+            Print(L"%s=%s\r\n", g_env_names[i], g_env_values[i]);
+        }
+        return;
+    }
+    int eq = 0;
+    while (arg[eq] != L'\0' && arg[eq] != L'=')
+    {
+        eq++;
+    }
+    if (arg[eq] != L'=')
+    {
+        Print(L"Usage: set name=value\r\n");
+        return;
+    }
+    CHAR16 name[64]   = {0};
+    CHAR16 value[128] = {0};
+    int name_len = eq < 63 ? eq : 63;
+    for (int i = 0; i < name_len; i++)
+    {
+        name[i] = arg[i];
+    }
+    CHAR16 raw_value[128] = {0};
+    int vlen = StrLen(arg + eq + 1);
+    if (vlen > 127)
+    {
+        vlen = 127;
+    }
+    for (int i = 0; i < vlen; i++)
+    {
+        raw_value[i] = arg[eq + 1 + i];
+    }
+    env_expand(raw_value, value);
+    env_set(name, value);
 }
 
-static VOID input_read(EFI_SYSTEM_TABLE *ST, CHAR16 *line) {
-    UINTN pos = 0;
+
+void input_read(EFI_SYSTEM_TABLE *ST, CHAR16 *line)
+{
+    int pos = 0;
     EFI_INPUT_KEY key;
-    line_zero(line);
+    for (int i = 0; i < MAX_INPUT; i++)
+    {
+        line[i] = L'\0';
+    }
     Print(L"uefi> ");
-    for (;;) {
+    for (;;)
+    {
         if (uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2, ST->ConIn, &key) != EFI_SUCCESS)
+        {
             continue;
-        if (key.ScanCode == SCAN_UP) {
-            if (history_index > 0) line_load(line, &pos, history[--history_index]);
-        } else if (key.ScanCode == SCAN_DOWN) {
-            if (history_index < history_count - 1)
-                line_load(line, &pos, history[++history_index]);
-            else if (history_index == history_count - 1) {
-                history_index = history_count;
-                line_clear(pos); line_zero(line); pos = 0;
+        }
+        if (key.ScanCode == SCAN_UP)
+        {
+            if (g_hist_pos > 0)
+            {
+                g_hist_pos--;
             }
-        } else if (key.UnicodeChar == CHAR_CARRIAGE_RETURN) {
+            while (pos-- > 0)
+            {
+                Print(L"\b \b");
+            }
+            pos = 0;
+            line[0] = L'\0';
+            if (g_hist_pos < g_hist_count)
+            {
+                StrCpy(line, g_history[g_hist_pos]);
+                pos = StrLen(line);
+                Print(L"%s", line);
+            }
+        }
+        else if (key.ScanCode == SCAN_DOWN)
+        {
+            if (g_hist_pos < g_hist_count)
+            {
+                g_hist_pos++;
+            }
+            while (pos-- > 0)
+            {
+                Print(L"\b \b");
+            }
+            pos = 0;
+            line[0] = L'\0';
+            if (g_hist_pos < g_hist_count)
+            {
+                StrCpy(line, g_history[g_hist_pos]);
+                pos = StrLen(line);
+                Print(L"%s", line);
+            }
+        }
+        else if (key.UnicodeChar == CHAR_CARRIAGE_RETURN)
+        {
             break;
-        } else if (key.UnicodeChar == CHAR_BACKSPACE) {
-            if (pos > 0) { line[--pos] = L'\0'; Print(L"\b \b"); }
-        } else if (key.UnicodeChar >= 0x20 && key.UnicodeChar < 0x7F && pos < INPUT_MAX - 1) {
-            line[pos++] = key.UnicodeChar;
-            line[pos]   = L'\0';
-            Print(L"%c", key.UnicodeChar);
+        }
+        else if (key.UnicodeChar == CHAR_BACKSPACE)
+        {
+            if (pos > 0)
+            {
+                line[--pos] = L'\0';
+                Print(L"\b \b");
+            }
+        }
+        else if (key.UnicodeChar >= 0x20 && key.UnicodeChar < 0x7F)
+        {
+            if (pos < MAX_INPUT - 1)
+            {
+                line[pos++] = key.UnicodeChar;
+                line[pos]   = L'\0';
+                Print(L"%c", key.UnicodeChar);
+            }
         }
     }
 }
 
-static VOID cmd_help(void) {
-    Print(L"Commands:\r\n"
-          L"  help             show this message\r\n"
-          L"  cls              clear screen\r\n"
-          L"  echo <text>      print text ($VAR expansion supported)\r\n"
-          L"  ver              UEFI firmware version\r\n"
-          L"  time             current date and time\r\n"
-          L"  stall <ms>       sleep for <ms> milliseconds\r\n"
-          L"  set              list all variables\r\n"
-          L"  set <name>=<val> set a variable\r\n"
-          L"  unset <name>     delete a variable\r\n"
-          L"  reboot           cold reset\r\n"
-          L"  poweroff         shut down\r\n"
-          L"  exit             quit the shell\r\n");
-}
 
-static VOID cmd_ver(EFI_SYSTEM_TABLE *ST) {
-    Print(L"UEFI Specification: %u.%u\r\n",
-          (ST->Hdr.Revision >> 16) & 0xFFFF, ST->Hdr.Revision & 0xFFFF);
-    Print(L"Firmware Vendor:    %s\r\n",     ST->FirmwareVendor);
-    Print(L"Firmware Revision:  0x%08x\r\n", ST->FirmwareRevision);
-}
-
-static VOID cmd_time(EFI_SYSTEM_TABLE *ST) {
-    EFI_TIME t;
-    if (EFI_ERROR(uefi_call_wrapper(ST->RuntimeServices->GetTime, 2, &t, NULL))) {
-        Print(L"GetTime failed\r\n"); return;
-    }
-    Print(L"%04u-%02u-%02u  %02u:%02u:%02u\r\n",
-          t.Year, t.Month, t.Day, t.Hour, t.Minute, t.Second);
-}
-
-static VOID cmd_stall(EFI_SYSTEM_TABLE *ST, const CHAR16 *arg) {
-    if (!arg || !*arg) { Print(L"Usage: stall <ms>\r\n"); return; }
-    UINTN ms = 0;
-    for (UINTN i = 0; arg[i] >= L'0' && arg[i] <= L'9'; i++)
-        ms = ms * 10 + (arg[i] - L'0');
-    uefi_call_wrapper(ST->BootServices->Stall, 1, ms * 1000);
-    Print(L"Stalled %lu ms\r\n", ms);
-}
-
-static VOID cmd_set(const CHAR16 *args) {
-    if (!args || !*args) {
-        if (env_count == 0) { Print(L"(no variables)\r\n"); return; }
-        for (UINTN i = 0; i < env_count; i++)
-            Print(L"%s=%s\r\n", env_names[i], env_values[i]);
-        return;
-    }
-    /* Find '=' */
-    UINTN eq = 0;
-    while (args[eq] && args[eq] != L'=') eq++;
-    if (!args[eq]) { Print(L"Usage: set <name>=<value>\r\n"); return; }
-
-    CHAR16 name[ENV_NAME_MAX] = {0};
-    UINTN nlen = (eq < ENV_NAME_MAX - 1) ? eq : ENV_NAME_MAX - 1;
-    for (UINTN k = 0; k < nlen; k++) name[k] = args[k];
-
-    CHAR16 value[ENV_VAL_MAX] = {0};
-    env_expand(args + eq + 1, value);
-
-    env_set(name, value);
-}
-
-static BOOLEAN cmd_dispatch(EFI_SYSTEM_TABLE *ST, const CHAR16 *line) {
-    CHAR16 exp[INPUT_MAX];
-    env_expand(line, exp);
-
-    if      (StrCmp (exp, L"help")     == 0) cmd_help();
-    else if (StrCmp (exp, L"cls")      == 0) uefi_call_wrapper(ST->ConOut->ClearScreen, 1, ST->ConOut);
-    else if (StrnCmp(exp, L"echo", 4)  == 0) Print(L"%s\r\n", StrLen(exp) > 5 ? exp + 5 : L"");
-    else if (StrCmp (exp, L"ver")      == 0) cmd_ver(ST);
-    else if (StrCmp (exp, L"time")     == 0) cmd_time(ST);
-    else if (StrnCmp(exp, L"stall", 5) == 0) cmd_stall(ST, StrLen(exp) > 6 ? exp + 6 : L"");
-    else if (StrCmp (line, L"set")     == 0) cmd_set(NULL);
-    else if (StrnCmp(line, L"set ", 4) == 0) cmd_set(line + 4);
-    else if (StrnCmp(line, L"unset ",6)== 0) {
-        if (!env_unset(line + 6)) Print(L"unset: '%s' not found\r\n", line + 6);
-    }
-    else if (StrCmp (exp, L"reboot")   == 0) uefi_call_wrapper(ST->RuntimeServices->ResetSystem, 4, EfiResetCold,     EFI_SUCCESS, 0, NULL);
-    else if (StrCmp (exp, L"poweroff") == 0) uefi_call_wrapper(ST->RuntimeServices->ResetSystem, 4, EfiResetShutdown, EFI_SUCCESS, 0, NULL);
-    else if (StrCmp (exp, L"exit")     == 0) return FALSE;
-    else if (StrLen (exp) > 0)               Print(L"Unknown command: %s\r\n", exp);
-
-    return TRUE;
-}
-
-EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *ST) {
+EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *ST)
+{
     InitializeLib(ImageHandle, ST);
     uefi_call_wrapper(ST->ConOut->ClearScreen, 1, ST->ConOut);
 
-    CHAR16 line[INPUT_MAX];
-    while (TRUE) {
-        input_read(ST, line);
+    CHAR16 raw[MAX_INPUT];
+    CHAR16 line[MAX_INPUT];
+
+    while (1)
+    {
+        input_read(ST, raw);
         Print(L"\r\n");
-        if (StrLen(line) > 0) history_add(line);
-        if (!cmd_dispatch(ST, line)) break;
+
+        if (StrLen(raw) == 0)
+        {
+            continue;
+        }
+
+        history_add(raw);
+        env_expand(raw, line);
+
+        if (StrCmp(line, L"help") == 0)
+        {
+            Print(L"Commands: help  cls  ver  time  echo <text>\r\n"
+                  L"          set [name=value]  unset <name>\r\n"
+                  L"          reboot  poweroff  exit\r\n");
+        }
+        else if (StrCmp(line, L"cls") == 0)
+        {
+            uefi_call_wrapper(ST->ConOut->ClearScreen, 1, ST->ConOut);
+        }
+        else if (StrCmp(line, L"ver") == 0)
+        {
+            Print(L"UEFI %u.%u  |  %s\r\n",
+                (ST->Hdr.Revision >> 16) & 0xFFFF,
+                 ST->Hdr.Revision        & 0xFFFF,
+                 ST->FirmwareVendor);
+        }
+        else if (StrCmp(line, L"time") == 0)
+        {
+            EFI_TIME t;
+            uefi_call_wrapper(ST->RuntimeServices->GetTime, 2, &t, NULL);
+            Print(L"%04u-%02u-%02u  %02u:%02u:%02u\r\n",
+                t.Year, t.Month, t.Day, t.Hour, t.Minute, t.Second);
+        }
+        else if (StrnCmp(line, L"echo ", 5) == 0)
+        {
+            Print(L"%s\r\n", line + 5);
+        }
+        else if (StrCmp(raw, L"set") == 0)
+        {
+            cmd_set(NULL);
+        }
+        else if (StrnCmp(raw, L"set ", 4) == 0)
+        {
+            cmd_set(raw + 4);
+        }
+        else if (StrnCmp(raw, L"unset ", 6) == 0)
+        {
+            env_unset(raw + 6);
+        }
+        else if (StrCmp(line, L"reboot") == 0)
+        {
+            uefi_call_wrapper(ST->RuntimeServices->ResetSystem, 4,
+                EfiResetCold, EFI_SUCCESS, 0, NULL);
+        }
+        else if (StrCmp(line, L"poweroff") == 0)
+        {
+            uefi_call_wrapper(ST->RuntimeServices->ResetSystem, 4,
+                EfiResetShutdown, EFI_SUCCESS, 0, NULL);
+        }
+        else if (StrCmp(line, L"exit") == 0)
+        {
+            break;
+        }
+        else
+        {
+            Print(L"unknown command: %s\r\n", line);
+        }
     }
+
     return EFI_SUCCESS;
 }
