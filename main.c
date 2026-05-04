@@ -133,8 +133,6 @@ static VOID cmd_poweroff(EFI_SYSTEM_TABLE *ST) {
                       EfiResetShutdown, EFI_SUCCESS, 0, NULL);
 }
 
-/* ─── Dispatcher ───────────────────────────────────────────────────────────── */
-
 static BOOLEAN cmd_dispatch(EFI_SYSTEM_TABLE *ST, const CHAR16 *line) {
     if      (StrCmp (line, L"help")      == 0) { cmd_help();             }
     else if (StrCmp (line, L"cls")       == 0) { uefi_call_wrapper(ST->ConOut->ClearScreen, 1, ST->ConOut); }
@@ -148,8 +146,6 @@ static BOOLEAN cmd_dispatch(EFI_SYSTEM_TABLE *ST, const CHAR16 *line) {
     else if (StrLen (line) > 0)                { Print(L"Unknown command: %s\r\n", line); }
     return TRUE;
 }
-
-/* ─── Entry point ──────────────────────────────────────────────────────────── */
 
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *ST) {
     InitializeLib(ImageHandle, ST);
