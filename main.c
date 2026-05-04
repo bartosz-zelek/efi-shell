@@ -36,8 +36,7 @@ static VOID line_load(CHAR16 *line, UINTN *pos, UINTN max, const CHAR16 *src) {
     Print(L"%s", line);
 }
 
-static VOID input_read(EFI_SYSTEM_TABLE *ST, const CHAR16 *prompt,
-                       CHAR16 *line, UINTN max) {
+static VOID input_read(EFI_SYSTEM_TABLE *ST, const CHAR16 *prompt, CHAR16 *line, UINTN max) {
     UINTN pos = 0;
     EFI_INPUT_KEY key;
 
@@ -45,8 +44,7 @@ static VOID input_read(EFI_SYSTEM_TABLE *ST, const CHAR16 *prompt,
     Print(prompt);
 
     for (;;) {
-        if (uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2, ST->ConIn, &key)
-                != EFI_SUCCESS)
+        if (uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2, ST->ConIn, &key) != EFI_SUCCESS)
             continue;
 
         if (key.ScanCode == SCAN_UP) {
@@ -72,8 +70,7 @@ static VOID input_read(EFI_SYSTEM_TABLE *ST, const CHAR16 *prompt,
                 Print(L"\b \b");
             }
 
-        } else if (key.UnicodeChar >= 0x20 && key.UnicodeChar < 0x7F
-                   && pos < max - 1) {
+        } else if (key.UnicodeChar >= 0x20 && key.UnicodeChar < 0x7F && pos < max - 1) {
             line[pos++] = key.UnicodeChar;
             line[pos]   = L'\0';
             Print(L"%c", key.UnicodeChar);
@@ -95,42 +92,36 @@ static VOID cmd_help(void) {
 }
 
 static VOID cmd_ver(EFI_SYSTEM_TABLE *ST) {
-    Print(L"UEFI Specification: %u.%u\r\n",
-          (ST->Hdr.Revision >> 16) & 0xFFFF,
-           ST->Hdr.Revision        & 0xFFFF);
+    Print(L"UEFI Specification: %u.%u\r\n", (ST->Hdr.Revision >> 16) & 0xFFFF, ST->Hdr.Revision & 0xFFFF);
     Print(L"Firmware Vendor:    %s\r\n",     ST->FirmwareVendor);
     Print(L"Firmware Revision:  0x%08x\r\n", ST->FirmwareRevision);
 }
 
 static VOID cmd_time(EFI_SYSTEM_TABLE *ST) {
     EFI_TIME Time;
-    EFI_STATUS Status = uefi_call_wrapper(ST->RuntimeServices->GetTime, 2,
-                            &Time, NULL);
+    EFI_STATUS Status = uefi_call_wrapper(ST->RuntimeServices->GetTime, 2, &Time, NULL);
     if (EFI_ERROR(Status)) { Print(L"GetTime failed\r\n"); return; }
-    Print(L"%04u-%02u-%02u  %02u:%02u:%02u\r\n",
-          Time.Year, Time.Month,  Time.Day,
-          Time.Hour, Time.Minute, Time.Second);
+    Print(L"%04u-%02u-%02u  %02u:%02u:%02u\r\n", Time.Year, Time.Month, Time.Day, Time.Hour, Time.Minute, Time.Second);
 }
 
 static VOID cmd_stall(EFI_SYSTEM_TABLE *ST, const CHAR16 *args) {
     if (!args || StrLen(args) == 0) {
-        Print(L"Usage: stall <ms>\r\n"); return;
+        Print(L"Usage: stall <ms>\r\n");
+        return;
     }
     UINTN ms = 0;
     for (UINTN i = 0; args[i] >= L'0' && args[i] <= L'9'; i++)
         ms = ms * 10 + (args[i] - L'0');
-    uefi_call_wrapper(ST->BootServices->Stall, 1, ms * 1000); /* µs */
+    uefi_call_wrapper(ST->BootServices->Stall, 1, ms * 1000);
     Print(L"Stalled %lu ms\r\n", ms);
 }
 
 static VOID cmd_reboot(EFI_SYSTEM_TABLE *ST) {
-    uefi_call_wrapper(ST->RuntimeServices->ResetSystem, 4,
-                      EfiResetCold, EFI_SUCCESS, 0, NULL);
+    uefi_call_wrapper(ST->RuntimeServices->ResetSystem, 4, EfiResetCold, EFI_SUCCESS, 0, NULL);
 }
 
 static VOID cmd_poweroff(EFI_SYSTEM_TABLE *ST) {
-    uefi_call_wrapper(ST->RuntimeServices->ResetSystem, 4,
-                      EfiResetShutdown, EFI_SUCCESS, 0, NULL);
+    uefi_call_wrapper(ST->RuntimeServices->ResetSystem, 4, EfiResetShutdown, EFI_SUCCESS, 0, NULL);
 }
 
 static BOOLEAN cmd_dispatch(EFI_SYSTEM_TABLE *ST, const CHAR16 *line) {
