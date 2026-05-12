@@ -4,6 +4,8 @@
 #define MAX_INPUT   256
 #define MAX_HISTORY 50
 #define MAX_ENVVARS 32
+#define MAX_PATH    512
+#define CAT_BUF     4096
 
 CHAR16 g_history[MAX_HISTORY][MAX_INPUT];
 int    g_hist_count = 0;
@@ -12,6 +14,9 @@ int    g_hist_pos   = 0;
 CHAR16 g_env_names [MAX_ENVVARS][64];
 CHAR16 g_env_values[MAX_ENVVARS][128];
 int    g_env_count = 0;
+
+CHAR16          g_cwd[MAX_PATH] = L"\\";
+EFI_FILE_HANDLE g_root          = NULL;
 
 
 void history_add(CHAR16 *cmd)
@@ -45,6 +50,7 @@ CHAR16 *env_get(CHAR16 *name)
     return NULL;
 }
 
+
 void env_set(CHAR16 *name, CHAR16 *value)
 {
     for (int i = 0; i < g_env_count; i++)
@@ -67,6 +73,7 @@ void env_set(CHAR16 *name, CHAR16 *value)
     }
 }
 
+
 void env_unset(CHAR16 *name)
 {
     for (int i = 0; i < g_env_count; i++)
@@ -81,6 +88,7 @@ void env_unset(CHAR16 *name)
     }
     Print(L"unset: '%s' not found\r\n", name);
 }
+
 
 void env_expand(CHAR16 *src, CHAR16 *dst)
 {
@@ -121,6 +129,7 @@ void env_expand(CHAR16 *src, CHAR16 *dst)
     dst[d] = L'\0';
 }
 
+
 void cmd_set(CHAR16 *arg)
 {
     if (arg == NULL || *arg == L'\0')
@@ -145,25 +154,163 @@ void cmd_set(CHAR16 *arg)
         Print(L"Usage: set name=value\r\n");
         return;
     }
-    CHAR16 name[64]   = {0};
-    CHAR16 value[128] = {0};
+    CHAR16 name[64]      = {0};
+    CHAR16 value[128]    = {0};
+    CHAR16 raw_value[128]= {0};
     int name_len = eq < 63 ? eq : 63;
     for (int i = 0; i < name_len; i++)
     {
         name[i] = arg[i];
     }
-    CHAR16 raw_value[128] = {0};
     int vlen = StrLen(arg + eq + 1);
-    if (vlen > 127)
-    {
-        vlen = 127;
-    }
+    if (vlen > 127) vlen = 127;
     for (int i = 0; i < vlen; i++)
     {
         raw_value[i] = arg[eq + 1 + i];
     }
     env_expand(raw_value, value);
     env_set(name, value);
+}
+
+
+// open volume root from the boot device
+EFI_FILE_HANDLE fs_open_root(EFI_HANDLE ImageHandle)
+{
+    EFI_LOADED_IMAGE                *loaded_image = NULL;
+    EFI_GUID                         lipGuid = LOADED_IMAGE_PROTOCOL;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *fs      = NULL;
+    EFI_GUID                         fsGuid  = SIMPLE_FILE_SYSTEM_PROTOCOL;
+    EFI_FILE_HANDLE                  root    = NULL;
+
+    uefi_call_wrapper(BS->HandleProtocol, 3, ImageHandle, &lipGuid, (void **)&loaded_image);
+    uefi_call_wrapper(BS->HandleProtocol, 3, loaded_image->DeviceHandle, &fsGuid, (void **)&fs);
+    uefi_call_wrapper(fs->OpenVolume, 2, fs, &root);
+
+    return root;
+}
+
+
+// build absolute path: if arg starts with \ use as-is, else append to g_cwd
+void fs_make_path(CHAR16 *arg, CHAR16 *out)
+{
+    if (arg[0] == L'\\')
+    {
+        StrCpy(out, arg);
+    }
+    else
+    {
+        StrCpy(out, g_cwd);
+        if (out[StrLen(out) - 1] != L'\\')
+        {
+            CHAR16 sep[2] = { L'\\', L'\0' };
+            StrCat(out, sep);
+        }
+        StrCat(out, arg);
+    }
+}
+
+
+EFI_FILE_HANDLE fs_open(CHAR16 *path, UINT64 mode)
+{
+    EFI_FILE_HANDLE fh = NULL;
+    EFI_STATUS st = uefi_call_wrapper(g_root->Open, 5, g_root, &fh, path, mode, 0);
+    if (EFI_ERROR(st))
+    {
+        Print(L"cannot open: %s\r\n", path);
+        return NULL;
+    }
+    return fh;
+}
+
+
+void cmd_ls(CHAR16 *arg)
+{
+    CHAR16 path[MAX_PATH];
+    if (arg == NULL || *arg == L'\0')
+        StrCpy(path, g_cwd);
+    else
+        fs_make_path(arg, path);
+
+    EFI_FILE_HANDLE dir = fs_open(path, EFI_FILE_MODE_READ);
+    if (!dir) return;
+
+    UINTN          buf_size = sizeof(EFI_FILE_INFO) + 512 * sizeof(CHAR16);
+    EFI_FILE_INFO *info     = AllocatePool(buf_size);
+
+    for (;;)
+    {
+        UINTN sz = buf_size;
+        EFI_STATUS st = uefi_call_wrapper(dir->Read, 3, dir, &sz, info);
+        if (EFI_ERROR(st) || sz == 0) break;
+        Print(L"%s\r\n", info->FileName);
+    }
+
+    FreePool(info);
+    uefi_call_wrapper(dir->Close, 1, dir);
+}
+
+
+void cmd_cd(CHAR16 *arg)
+{
+    CHAR16 new_path[MAX_PATH];
+    fs_make_path(arg, new_path);
+
+    // verify path exists and is a directory
+    EFI_FILE_HANDLE fh = fs_open(new_path, EFI_FILE_MODE_READ);
+    if (!fh) return;
+
+    EFI_GUID       guid = EFI_FILE_INFO_ID;
+    UINTN          sz   = sizeof(EFI_FILE_INFO) + 512 * sizeof(CHAR16);
+    EFI_FILE_INFO *info = AllocatePool(sz);
+    uefi_call_wrapper(fh->GetInfo, 4, fh, &guid, &sz, info);
+    uefi_call_wrapper(fh->Close, 1, fh);
+
+    if (!(info->Attribute & EFI_FILE_DIRECTORY))
+    {
+        Print(L"not a directory: %s\r\n", new_path);
+        FreePool(info);
+        return;
+    }
+    FreePool(info);
+
+    // strip trailing backslash
+    int len = StrLen(new_path);
+    if (len > 1 && new_path[len - 1] == L'\\')
+        new_path[len - 1] = L'\0';
+
+    StrCpy(g_cwd, new_path);
+}
+
+
+void cmd_cat(CHAR16 *arg)
+{
+    CHAR16 path[MAX_PATH];
+    fs_make_path(arg, path);
+
+    EFI_FILE_HANDLE fh = fs_open(path, EFI_FILE_MODE_READ);
+    if (!fh) return;
+
+    UINT8 *buf = AllocatePool(CAT_BUF);
+
+    for (;;)
+    {
+        UINTN sz = CAT_BUF;
+        EFI_STATUS st = uefi_call_wrapper(fh->Read, 3, fh, &sz, buf);
+        if (EFI_ERROR(st) || sz == 0) break;
+
+        for (UINTN i = 0; i < sz; i++)
+        {
+            CHAR16 ch = (CHAR16)buf[i];
+            if (ch == L'\n')
+                Print(L"\r\n");
+            else if (ch != L'\r')
+                Print(L"%c", ch);
+        }
+    }
+    Print(L"\r\n");
+
+    FreePool(buf);
+    uefi_call_wrapper(fh->Close, 1, fh);
 }
 
 
@@ -250,6 +397,8 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *ST)
     InitializeLib(ImageHandle, ST);
     uefi_call_wrapper(ST->ConOut->ClearScreen, 1, ST->ConOut);
 
+    g_root = fs_open_root(ImageHandle);
+
     CHAR16 raw[MAX_INPUT];
     CHAR16 line[MAX_INPUT];
 
@@ -270,6 +419,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *ST)
         {
             Print(L"Commands: help  cls  ver  time  echo <text>\r\n"
                   L"          set [name=value]  unset <name>\r\n"
+                  L"          ls [path]  cd <path>  cat <file>  pwd\r\n"
                   L"          reboot  poweroff  exit\r\n");
         }
         else if (StrCmp(line, L"cls") == 0)
@@ -305,6 +455,26 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *ST)
         else if (StrnCmp(raw, L"unset ", 6) == 0)
         {
             env_unset(raw + 6);
+        }
+        else if (StrCmp(line, L"ls") == 0)
+        {
+            cmd_ls(NULL);
+        }
+        else if (StrnCmp(line, L"ls ", 3) == 0)
+        {
+            cmd_ls(line + 3);
+        }
+        else if (StrnCmp(line, L"cd ", 3) == 0)
+        {
+            cmd_cd(line + 3);
+        }
+        else if (StrnCmp(line, L"cat ", 4) == 0)
+        {
+            cmd_cat(line + 4);
+        }
+        else if (StrCmp(line, L"pwd") == 0)
+        {
+            Print(L"%s\r\n", g_cwd);
         }
         else if (StrCmp(line, L"reboot") == 0)
         {
